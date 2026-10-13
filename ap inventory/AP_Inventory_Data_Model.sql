@@ -71,7 +71,6 @@ gl_src AS (
          END                                                   AS transfer_to_gl_status,
          CASE WHEN gjh.status = 'P' THEN 'Posted' ELSE 'Unposted' END AS journal_status,
          TO_CHAR(NVL(gjh.posting_acct_seq_value, gjh.doc_sequence_value)) AS gl_sequence,
-         gjh.name                                              AS journal_name,
          gjh.je_header_id,
          gjl.je_line_num,
          CASE WHEN xal.ae_header_id IS NOT NULL THEN NVL(xal.accounted_dr, 0)
@@ -113,80 +112,8 @@ gl_src AS (
   LEFT JOIN xla_lookups xlk
          ON xlk.lookup_type = 'XLA_ACCOUNTING_CLASS'
         AND xlk.lookup_code = xal.accounting_class_code
-  WHERE  (:P_POSTED_TO_GL IS NULL OR :P_POSTED_TO_GL = 'All'
-          OR CASE WHEN gjh.status = 'P' THEN 'Yes' ELSE 'No' END = :P_POSTED_TO_GL)
-  AND    (:P_JOURNAL_SOURCE IS NULL OR :P_JOURNAL_SOURCE = 'All'
+  WHERE  (:P_JOURNAL_SOURCE IS NULL OR :P_JOURNAL_SOURCE = 'All'
           OR gjs.user_je_source_name = :P_JOURNAL_SOURCE)
-),
-
-xla_src AS (
-  SELECT acc.ledger_id,
-         acc.code_combination_id,
-         xah.period_name,
-         gjs.user_je_source_name                               AS source,
-         gjc.user_je_category_name                             AS category,
-         xal.accounting_date                                   AS acct_date,
-         NVL(xlk.meaning, xal.accounting_class_code)           AS accounting_class,
-         xah.application_id,
-         xah.ae_header_id,
-         xal.ae_line_num,
-         xah.event_id,
-         xte.entity_code,
-         xte.source_id_int_1,
-         xte.transaction_number,
-         xet.name                                              AS event_type,
-         TO_CHAR(xah.doc_sequence_value)                       AS xla_voucher,
-         CASE xah.gl_transfer_status_code
-              WHEN 'N'  THEN 'Not Transferred'
-              WHEN 'NT' THEN 'Not to be Transferred'
-              WHEN 'S'  THEN 'Selected for Transfer'
-              ELSE 'Not Transferred'
-         END                                                   AS transfer_to_gl_status,
-         'Not in GL'                                           AS journal_status,
-         CAST(NULL AS VARCHAR2(40))                            AS gl_sequence,
-         CAST(NULL AS VARCHAR2(100))                           AS journal_name,
-         CAST(NULL AS NUMBER)                                  AS je_header_id,
-         CAST(NULL AS NUMBER)                                  AS je_line_num,
-         NVL(xal.accounted_dr, 0)                              AS debit,
-         NVL(xal.accounted_cr, 0)                              AS credit
-  FROM   acc
-  JOIN   xla_ae_lines xal
-         ON xal.code_combination_id = acc.code_combination_id
-  JOIN   xla_ae_headers xah
-         ON xah.ae_header_id = xal.ae_header_id
-        AND xah.application_id = xal.application_id
-        AND xah.ledger_id = acc.ledger_id
-        AND xah.balance_type_code = 'A'
-        AND xah.accounting_entry_status_code = 'F'
-        AND xah.gl_transfer_status_code <> 'Y'
-  JOIN   prd
-         ON prd.ledger_id = xah.ledger_id
-        AND prd.period_name = xah.period_name
-  JOIN   xla_subledgers xsl      ON xsl.application_id = xah.application_id
-  JOIN   gl_je_sources_vl gjs    ON gjs.je_source_name = xsl.je_source_name
-  LEFT JOIN gl_je_categories_vl gjc ON gjc.je_category_name = xah.je_category_name
-  LEFT JOIN xla_events xe
-         ON xe.event_id = xah.event_id
-        AND xe.application_id = xah.application_id
-  LEFT JOIN xla_transaction_entities xte
-         ON xte.entity_id = xah.entity_id
-        AND xte.application_id = xah.application_id
-  LEFT JOIN xla_event_types_tl xet
-         ON xet.application_id = xe.application_id
-        AND xet.entity_code = xte.entity_code
-        AND xet.event_type_code = xe.event_type_code
-        AND xet.language = USERENV('LANG')
-  LEFT JOIN xla_lookups xlk
-         ON xlk.lookup_type = 'XLA_ACCOUNTING_CLASS'
-        AND xlk.lookup_code = xal.accounting_class_code
-  WHERE  :P_POSTED_TO_GL = 'Not Transferred'
-  AND    (:P_JOURNAL_SOURCE IS NULL OR :P_JOURNAL_SOURCE = 'All'
-          OR gjs.user_je_source_name = :P_JOURNAL_SOURCE)
-),
-lines AS (
-  SELECT * FROM gl_src
-  UNION ALL
-  SELECT * FROM xla_src
 ),
 
 det AS (
@@ -201,12 +128,8 @@ det AS (
          NVL(rcv.sla_transaction_number,
              CASE WHEN ct.txn_source_doc_type = 'RCV' THEN ct.txn_source_doc_number END) AS receipt_number,
          esi.item_number                                       AS item,
-         CASE WHEN l.event_type <> 'Landed Cost Adjustment for Receipt' OR l.event_type IS NULL
-              THEN org_from.organization_code END              AS from_trade_organization,
-         CASE WHEN l.event_type <> 'Landed Cost Adjustment for Receipt' OR l.event_type IS NULL
-              THEN org_to.organization_code END                AS trade_organization,
          NVL(bu_ap.bu_name, bu_rcv.bu_name)                    AS business_unit
-  FROM   lines l
+  FROM   gl_src l
   LEFT JOIN ap_invoices_all aia
          ON l.entity_code = 'AP_INVOICES'
         AND aia.invoice_id = l.source_id_int_1
@@ -249,15 +172,6 @@ det AS (
   LEFT JOIN egp_system_items_b esi
          ON esi.inventory_item_id = COALESCE(rcv.inventory_item_id, imt.inventory_item_id, ct.inventory_item_id)
         AND esi.organization_id = COALESCE(rcv.inventory_org_id, imt.organization_id, ct.inventory_org_id)
-  LEFT JOIN inv_org_parameters org_from
-         ON org_from.organization_id = CASE WHEN rcv.inventory_org_id IS NOT NULL THEN rcv.ship_from_inv_org_id
-                                            WHEN imt.transaction_quantity < 0 THEN imt.organization_id
-                                            ELSE imt.transfer_organization_id END
-  LEFT JOIN inv_org_parameters org_to
-         ON org_to.organization_id = CASE WHEN rcv.inventory_org_id IS NOT NULL THEN rcv.inventory_org_id
-                                          WHEN ct.transaction_id IS NOT NULL THEN ct.inventory_org_id
-                                          WHEN imt.transaction_quantity < 0 THEN imt.transfer_organization_id
-                                          ELSE imt.organization_id END
   LEFT JOIN fun_all_business_units_v bu_ap  ON bu_ap.bu_id  = aia.org_id
   LEFT JOIN fun_all_business_units_v bu_rcv ON bu_rcv.bu_id = rcv.business_unit_id
   WHERE  (:P_BUSINESS_UNIT IS NULL OR :P_BUSINESS_UNIT = 'All'
@@ -283,21 +197,19 @@ bal AS (
               AND    b.actual_flag = 'A'
               AND    NVL(b.translated_flag, 'X') NOT IN ('Y', 'R')
               AND    b.period_year * 10000 + b.period_num < prd.period_num), 0)
-       + CASE WHEN :P_POSTED_TO_GL IS NULL OR :P_POSTED_TO_GL IN ('All', 'No') THEN
-           NVL((SELECT SUM(NVL(ugl.accounted_dr, 0) - NVL(ugl.accounted_cr, 0))
-                FROM   gl_je_lines ugl
-                JOIN   gl_je_headers ugh
-                       ON ugh.je_header_id = ugl.je_header_id
-                JOIN   gl_period_statuses ups
-                       ON ups.ledger_id = ugh.ledger_id
-                      AND ups.application_id = 101
-                      AND ups.period_name = ugh.period_name
-                WHERE  ugl.code_combination_id = acc.code_combination_id
-                AND    ugh.ledger_id = acc.ledger_id
-                AND    ugh.actual_flag = 'A'
-                AND    ugh.status <> 'P'
-                AND    ups.effective_period_num < prd.period_num), 0)
-         ELSE 0 END AS opening_balance
+       + NVL((SELECT SUM(NVL(ugl.accounted_dr, 0) - NVL(ugl.accounted_cr, 0))
+              FROM   gl_je_lines ugl
+              JOIN   gl_je_headers ugh
+                     ON ugh.je_header_id = ugl.je_header_id
+              JOIN   gl_period_statuses ups
+                     ON ups.ledger_id = ugh.ledger_id
+                    AND ups.application_id = 101
+                    AND ups.period_name = ugh.period_name
+              WHERE  ugl.code_combination_id = acc.code_combination_id
+              AND    ugh.ledger_id = acc.ledger_id
+              AND    ugh.actual_flag = 'A'
+              AND    ugh.status <> 'P'
+              AND    ups.effective_period_num < prd.period_num), 0) AS opening_balance
   FROM   acc
   JOIN   prd ON prd.ledger_id = acc.ledger_id
 ),
@@ -342,11 +254,9 @@ SELECT s.ledger_name,
        d.po_number,
        d.receipt_number,
        d.item,
-       d.from_trade_organization,
-       d.trade_organization,
        d.gl_sequence,
+       TO_CHAR(d.ae_header_id)                                        AS journal_entry,
        d.event_type,
-       d.journal_name,
        d.business_unit,
        CASE WHEN d.debit  <> 0 THEN d.debit  END                      AS debit,
        CASE WHEN d.credit <> 0 THEN d.credit END                      AS credit

@@ -48,16 +48,6 @@ UNION ALL SELECT '230070100 - Inventory Accrual' FROM dual
 UNION ALL SELECT '230070101 - Expense Accrual' FROM dual
 
 
-/* ---------- LOV_POSTED_TO_GL  ->  P_POSTED_TO_GL  (default: All)
-   All             = everything in GL, posted and unposted
-   Yes / No        = GL journal posted / not posted
-   Not Transferred = final subledger entries that have not reached GL */
-SELECT 'All' FROM dual
-UNION ALL SELECT 'Yes' FROM dual
-UNION ALL SELECT 'No' FROM dual
-UNION ALL SELECT 'Not Transferred' FROM dual
-
-
 /* ---------- LOV_PERIOD  ->  P_PERIOD_FROM and P_PERIOD_TO  (both required)
    Newest first, in calendar order (not alphabetical). Adjustment periods
    are left out of the list but are still included when they fall inside
