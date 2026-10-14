@@ -1,23 +1,3 @@
-/* =====================================================================================
-   Mudad Audit Trail Report - 03 Environment Discovery
-   -------------------------------------------------------------------------------------
-   Purpose : confirm, in Mudad's own Fusion pod, every object and column the design relies on
-             (feasibility Step 3) BEFORE the final data model is written.
-   Where   : DEV or TEST pod first (not Production without authorization).
-   How     : create a temporary BI Publisher data model (data source ApplicationDB_FSCM),
-             paste ONE check at a time as a SQL data set, view the data, and send the output
-             (Excel export) back. Every statement is a read-only SELECT.
-   Names   : every table/column below is taken from Oracle's 26D "Tables and Views" guides
-             (oedmf / oedmp / oedma). Checks C1, C3, C11 and C13 discover objects by name
-             pattern on purpose, because their exact content must be read from the pod.
-   ===================================================================================== */
-
-
-/* ---------- C1  Audit tables: which exist in this pod --------------------------------
-   Oracle documents each audit table as <base table>_ (trailing underscore).
-   Expected FOUND  : Payables invoice objects, General Ledger journals, Assets FA_ADDITIONS_B.
-   Expected MISSING: the rest. They are the evidence that those areas cannot be audited.
-   If any "Expected MISSING" table is FOUND, report it: that area would become auditable. */
 WITH t (base_table, expectation) AS (
   SELECT 'AP_INVOICES_ALL',               'Expected FOUND'   FROM dual UNION ALL
   SELECT 'AP_INVOICE_LINES_ALL',          'Expected FOUND'   FROM dual UNION ALL
@@ -53,9 +33,6 @@ GROUP  BY t.base_table, t.expectation
 ORDER  BY t.expectation, t.base_table
 ;
 
-
-/* ---------- C2  Audit tables: audit columns and data already recorded -----------------
-   C2a: expected per table AUDIT_ACTION_TYPE_, AUDIT_CHANGE_BIT_MAP_, AUDIT_IMPERSONATOR_. */
 SELECT table_name, column_name, data_type, data_length
 FROM   all_tab_columns
 WHERE  table_name IN ('AP_INVOICES_ALL_', 'AP_INVOICE_LINES_ALL_', 'AP_INVOICE_DISTRIBUTIONS_ALL_',
@@ -65,9 +42,6 @@ AND    column_name LIKE 'AUDIT%'
 ORDER  BY table_name, column_name
 ;
 
-/* C2b: is anything already being audited, and since when?
-   Keep only the branches for tables C1 reported FOUND (a missing table fails the statement).
-   0 rows recorded = auditing not enabled yet for that object.                            */
 SELECT 'AP_INVOICES_ALL_' AS audit_table, COUNT(*) AS audit_rows,
        MIN(last_update_date) AS first_change, MAX(last_update_date) AS last_change
 FROM   ap_invoices_all_
@@ -87,7 +61,6 @@ UNION ALL
 SELECT 'FA_ADDITIONS_B_', COUNT(*), MIN(last_update_date), MAX(last_update_date) FROM fa_additions_b_
 ;
 
-/* C2c: action types recorded so far (Payables: UPDATE / DELETE expected, INSERT not expected). */
 SELECT 'AP_INVOICES_ALL_' AS audit_table, audit_action_type_, COUNT(*) AS cnt FROM ap_invoices_all_ GROUP BY audit_action_type_
 UNION ALL
 SELECT 'AP_INVOICE_LINES_ALL_', audit_action_type_, COUNT(*) FROM ap_invoice_lines_all_ GROUP BY audit_action_type_
@@ -95,35 +68,18 @@ UNION ALL
 SELECT 'GL_JE_HEADERS_', audit_action_type_, COUNT(*) FROM gl_je_headers_ GROUP BY audit_action_type_
 ;
 
-
-/* ---------- C3  Audit setup: which objects / attributes are switched on ---------------
-   Preferred, supported checks (no SQL):
-     a) Setup and Maintenance > Manage Audit Policies > Configure Business Object Attributes,
-        for Payables, Receivables, Cash Management, Assets, General Ledger, Purchasing and
-        Self Service Procurement: screenshot the objects offered and the ticked attributes.
-     b) REST: POST /fscmRestApi/fndAuditRESTService/audittrail/get-auditsetup (per product)
-        returns every auditable object and attribute with an isAuditable flag.
-   Optional SQL: Oracle's older developer guide describes FND_AUDIT_ATTRIBUTES as an internal
-   table. First list what the pod actually has:                                           */
 SELECT owner, object_name, object_type
 FROM   all_objects
 WHERE  object_name LIKE 'FND\_AUDIT%' ESCAPE '\'
 ORDER  BY object_name
 ;
-/* Then list its columns before querying it (do not assume the legacy column names): */
+
 SELECT column_name, data_type
 FROM   all_tab_columns
 WHERE  table_name = 'FND_AUDIT_ATTRIBUTES'
 ORDER  BY column_id
 ;
 
-
-/* ---------- C4  Audit row semantics (validation test V-01) ----------------------------
-   After V-01 is executed in TEST (create invoice, change supplier, change amount, change
-   supplier again, using two different users), run this for that invoice and compare it row by
-   row with Navigator > Tools > Audit Reports for the same invoice. It answers:
-   does each row hold the values AFTER the change or BEFORE it? Is the creation state present?
-   Who and when are recorded where?                                                         */
 SELECT a.last_update_date, a.last_updated_by, a.audit_action_type_, a.audit_impersonator_,
        a.audit_change_bit_map_, a.object_version_number,
        a.invoice_num, a.vendor_id, a.vendor_site_id, a.invoice_amount, a.description, a.invoice_date
@@ -132,10 +88,6 @@ WHERE  a.invoice_id = :P_TEST_INVOICE_ID
 ORDER  BY a.last_update_date, a.object_version_number
 ;
 
-
-/* ---------- C5  Column availability for every native column the design uses ----------
-   536 table/column pairs, all taken from Oracle's 26D Tables and Views guides.
-   Expected result: no MISSING rows. Any MISSING row is reported back before Phase 2. */
 WITH req_raw (tab, cols) AS (
   SELECT 'AP_BATCHES_ALL', 'BATCH_ID,BATCH_NAME' FROM dual
   UNION ALL SELECT 'AP_CHECKS_ALL', 'CHECK_ID,CHECK_NUMBER,DOC_SEQUENCE_VALUE,PAYMENT_ID,PAYMENT_TYPE_FLAG,STATUS_LOOKUP_CODE' FROM dual
@@ -230,20 +182,10 @@ GROUP  BY req.tab, req.col
 ORDER  BY CASE WHEN COUNT(atc.column_name) = 0 THEN 0 ELSE 1 END, req.tab, req.col
 ;
 
-
-/* ---------- C6  Time zone: how change timestamps are stored ---------------------------
-   Compare with a change whose local time is known (for example the V-01 supplier change).
-   If LAST_UPDATE_DATE is 3 hours behind the time shown on screen, timestamps are stored in
-   UTC and the report converts them to Asia/Riyadh.                                         */
 SELECT DBTIMEZONE, SESSIONTIMEZONE, SYSTIMESTAMP, CURRENT_TIMESTAMP, SYSDATE
 FROM   dual
 ;
 
-
-/* ---------- C7  Purchase order change-order history for one PO ------------------------
-   Pick a PO with at least two processed change orders. Expected: one PO_VERSIONS row per
-   change order (CO_SEQUENCE 0 = original) and archive rows whose FROM_CO_SEQ / TO_CO_SEQ
-   ranges chain together.                                                                  */
 SELECT v.co_sequence, v.co_num, v.revision_num, v.change_order_status, v.originator_role,
        v.created_by, v.creation_date, v.submitted_date, v.approved_date, v.processed_date,
        SUBSTR(v.change_order_desc, 1, 200) AS change_order_desc
@@ -266,10 +208,6 @@ WHERE  h.segment1 = :P_TEST_PO_NUMBER
 ORDER  BY 1, 8, 2
 ;
 
-
-/* ---------- C8  User names: do WHO columns match PER_USERS.USERNAME? ------------------
-   Expected: almost every value MATCHED. Unmatched values are usually integration or process
-   users; they are shown as recorded.                                                       */
 SELECT w.username,
        CASE WHEN u.user_id IS NULL THEN 'UNMATCHED' ELSE 'MATCHED' END AS match_status,
        w.rows_updated
@@ -281,16 +219,12 @@ LEFT JOIN per_users u ON u.username = w.username
 ORDER  BY match_status DESC, w.rows_updated DESC
 ;
 
-
-/* ---------- C9  Bank statement balance codes in use (for CLBD / OPBD) ------------------ */
 SELECT balance_code, COUNT(*) AS cnt
 FROM   ce_stmt_balances
 GROUP  BY balance_code
 ORDER  BY cnt DESC
 ;
 
-
-/* ---------- C10 Reconciliation history action codes in use ---------------------------- */
 SELECT recon_action, auto_recon_flag, COUNT(*) AS cnt,
        MIN(creation_date) AS first_seen, MAX(creation_date) AS last_seen
 FROM   ce_recon_history
@@ -298,21 +232,12 @@ GROUP  BY recon_action, auto_recon_flag
 ORDER  BY recon_action, auto_recon_flag
 ;
 
-
-/* ---------- C11 Journal action log (GL_JE_ACTION_LOG) ----------------------------------
-   Oracle documents it as the history of a journal batch (user, role, date and time of each
-   action). Read its columns from the pod first; a second query on the actions in use is
-   written once the column names are known.                                                */
 SELECT column_name, data_type, data_length
 FROM   all_tab_columns
 WHERE  table_name = 'GL_JE_ACTION_LOG'
 ORDER  BY column_id
 ;
 
-
-/* ---------- C12 Attachment entity names used per document type ------------------------
-   Gives the ENTITY_NAME values for attachments on invoices, payments, transactions,
-   receipts, statements, journals, assets and requisition lines.                           */
 SELECT fad.entity_name, COUNT(*) AS attachments, MAX(fad.creation_date) AS latest
 FROM   fnd_attached_documents fad
 WHERE  REGEXP_LIKE(fad.entity_name, '^(AP|AR|RA|CE|FA|GL|PO|POR|IBY)_')
@@ -320,17 +245,12 @@ GROUP  BY fad.entity_name
 ORDER  BY fad.entity_name
 ;
 
-
-/* ---------- C13 Scheduled-process history visible to BI Publisher? -------------------
-   Needed only for Assets "Calculate Depreciation" / "Close Period" (Q13).                 */
 SELECT owner, object_name, object_type
 FROM   all_objects
 WHERE  object_name LIKE 'ESS\_REQUEST%' ESCAPE '\'
 ORDER  BY object_name
 ;
 
-
-/* ---------- C14 Asset transaction types in use ---------------------------------------- */
 SELECT transaction_type_code, transaction_subtype, COUNT(*) AS cnt,
        MIN(date_effective) AS first_seen, MAX(date_effective) AS last_seen
 FROM   fa_transaction_headers
@@ -338,8 +258,6 @@ GROUP  BY transaction_type_code, transaction_subtype
 ORDER  BY cnt DESC
 ;
 
-
-/* ---------- C15 PO change-order statuses and archive dispositions in use -------------- */
 SELECT 'PO_VERSIONS.CHANGE_ORDER_STATUS' AS item, change_order_status AS value, COUNT(*) AS cnt
 FROM   po_versions
 GROUP  BY change_order_status

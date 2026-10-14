@@ -382,6 +382,15 @@ AND (COALESCE(NULL, :P_PRODUCT)  IS NULL OR 'Payables' IN (:P_PRODUCT))  -- gate
 
 A BI Publisher **Excel template** (`.xls`, the same template type the AP Inventory report already uses) built to match `Audit Trail Report Template.xlsx`: title, Product/User block, 8 columns, colours and widths. Data is grouped by Product, then User (Q1), and sorted by Date, then Transaction ID.
 
+The layout is built: **`Audit_Trail_Report_Layout.xls`**. Its requirements on the Phase 2 data model:
+
+- **One flat data group named `G_AUDIT`**, one row per change. The template does the Product/User grouping itself, using the same `XDO_METADATA` regrouping pattern as the AP Inventory layout:
+  - `G_BLOCK` repeats rows 3–7 (Product line, User line, column headers, data, spacer) for each distinct `PRODUCT` + `USERNAME`.
+  - `G_CHANGE` repeats row 6 for each change in that block.
+- **Elements:** `PRODUCT`, `USERNAME` (grouping key), `USER_LABEL` (shown after *User:*, for example `Display Name (username)`), `CHANGE_DATE` (text, `DD/MM/YYYY HH24:MI:SS`, Mudad time), `TRANSACTION_ID`, `ACTION_PERFORMED`, `OLD_VALUE`, `NEW_VALUE`, `TRANSACTION_STATUS`, `APPROVAL_STATUS`, `VOUCHER_NUMBER`.
+- **Sort order:** the SQL returns rows ordered by `PRODUCT`, `USERNAME`, change timestamp, `TRANSACTION_ID`. Blocks appear in the order of their first row.
+- **Preview:** `Audit_Trail_Sample_Data.xml` holds illustrative rows in this structure for previewing the layout before the data model exists.
+
 ### 5.5 Security and performance
 
 - The report and data model go in a custom catalog folder that only audit/finance-control roles can open. BI Publisher SQL bypasses Fusion data security.
