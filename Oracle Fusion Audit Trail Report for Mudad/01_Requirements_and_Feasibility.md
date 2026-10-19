@@ -470,3 +470,12 @@ The layout is built: **`Audit_Trail_Report_Layout.xls`**. Its requirements on th
 | 5 | **Transaction Status** read from Oracle's MJE_BATCH_STATUS lookup (journal batch status), with Posted / Unposted as fallback. | Raw status codes such as U were displayed. |
 | 6 | **Coverage sheet removed** from the Excel layout. | Requested. |
 | 7 | Fixed Assets "Comments" false positive fixed in the generator (kept for future use, not in the GL report). | A Comments row was produced for every asset transaction, even without a comment. |
+
+### 19 October 2026 (later): all modules restored
+
+The General Ledger-only restriction was withdrawn. The report again covers all 8 products (Product parameter and LOV restored). The General Ledger corrections from the entry above are kept in the full report:
+- Transaction ID = journal name, never the batch name.
+- Journal action log limited to Copy.
+- Batch status read from the MJE_BATCH_STATUS lookup.
+
+The Fixed Assets Comments fix is also included. The Coverage sheet stays removed.
