@@ -42,6 +42,8 @@
 
    For these areas the report cannot show old and new field values from Fusion. It can show only the native events that exist (receipt applications, reconciliations, attachment additions). §4.5 lists the options.
 
+   **Confirmed in Mudad's pod on 14 October 2026** (check 1, §4.8): none of these areas has an audit table, while all 8 audit tables for Payables, General Ledger and Assets exist.
+
 4. **Auditing is off by default and is not retroactive.** Every day before the Payables, General Ledger and Assets audit policies are switched on is history that can never be recovered. **Recommendation: enable them now in DEV/TEST, and in Production as soon as Mudad approves** (§4.4), even before the report is built.
 
 5. **Purchase orders have full field-level history without any setup.** It comes from the change-order archive tables. The history has change-order granularity: several edits in one change order share one timestamp.
@@ -185,7 +187,7 @@ Items marked ✔ were resolved during the analysis and are shown for confirmatio
 | Q2 | Show the selected From/To dates on the report? | Not shown. |
 | Q3 | PO: is auditing change orders after approval enough? Edits to a draft before its first approval are not recorded anywhere in Fusion. | Yes. |
 | Q4 | **Voucher Number**: confirm the definitions in §3.4. The AP Inventory report used the SLA accounting sequence first; Oracle calls `AP_INVOICES_ALL.DOC_SEQUENCE_VALUE` the invoice voucher number. | §3.4. |
-| Q5 | Mudad time zone for displaying and filtering change times. | `Asia/Riyadh`, checked with C6. |
+| Q5 | Mudad time zone for displaying and filtering change times. The database runs in UTC (check 9, §4.8), so times must be converted. | `Asia/Riyadh` (UTC+3). Please confirm. |
 | Q6 | Transaction / Approval Status: current status, or status at the time of the change? | Current. |
 | Q7 | PO *Additional Information → Payment Type, Payment Status* are not standard PO fields. Which descriptive flexfield context/segments hold them? | Header DFF; segments to be supplied. |
 | Q8 ✔ | AP Invoice rows that were unclear, as interpreted: row 34 *Number* = PO number on the line; row 46 *Region* = Income Tax Region; row 47 *Type* = Income Tax Type; row 54 *Correction Type* = line match/correction type; row 55 *Number* = corrected invoice. | As stated. Please confirm. |
@@ -322,7 +324,8 @@ Audit data is purged when a TEST pod is refreshed from Production with data mask
 ### 4.7 Known limitations (preliminary)
 
 1. **No history before auditing is enabled** for AP invoices, GL journals and asset descriptive fields.
-2. **Payables auditing does not record inserts** or changes made by scheduled processes. Added invoice lines and new installments are shown from their own creator and creation time. The old value of the first change depends on V-01.
+2. **Payables auditing does not record inserts** or changes made by scheduled processes. Added invoice lines and new installments are shown from their own creator and creation time. The first change's old value **is** recorded: a `HISTORY` row holds the state before it (§4.8).
+2a. **Attributes enabled later:** an attribute ticked after a record's `HISTORY` row was written has no earlier value in that row. Its first appearance must not be reported as a change; the extractor compares only columns that hold a value in both rows, or that were audited at both times. To be confirmed with the screenshots.
 3. **Purchase orders:** history exists only for processed change orders. All edits in one change order share one timestamp and one user (the change-order creator). Drafts edited before the first approval leave no history.
 4. **No field history** for AR transactions, receipt header fields, bank statements, requisition lines or payment fields (§4.5).
 5. **Asset Description** cannot be audited (`FA_ADDITIONS_TL` has no audit table).
@@ -331,6 +334,31 @@ Audit data is purged when a TEST pod is refreshed from Production with data mask
 8. Impersonation is no longer recorded by Fusion. How proxy users appear is not documented and is checked in V-01.
 9. Statuses are current, not historical (Q6).
 10. Audit history is removed by TEST-pod refreshes [Community].
+
+### 4.8 Environment check results
+
+Results from Mudad's pod, received 14 October 2026. Numbers are the statement order in `03_Environment_Discovery.sql`.
+
+| # | Check | Result | Consequence |
+|---|---|---|---|
+| 1 | Audit tables | **As expected.** FOUND: `AP_INVOICES_ALL_`, `AP_INVOICE_LINES_ALL_`, `AP_INVOICE_DISTRIBUTIONS_ALL_`, `AP_PAYMENT_SCHEDULES_ALL_`, `GL_JE_BATCHES_`, `GL_JE_HEADERS_`, `GL_JE_LINES_`, `FA_ADDITIONS_B_`. MISSING: the 13 others (AP payments and holds, AR transactions/lines, receipts and applications, bank statements/lines, asset description, requisitions, PO). | The capture split in §4.3 is confirmed for Mudad's pod, not only by Oracle's documentation. |
+| 8 | Native columns | **No MISSING columns.** Missing rows are listed first, and the first row returned was OK. | All native columns the design uses exist. |
+| 9 | Time zone | `DBTIMEZONE` = +00:00, `SESSIONTIMEZONE` = UTC, `SYSDATE` in UTC. | Timestamps are converted from UTC to Mudad time for display, and the From/To dates are converted to UTC for filtering. V-03 confirms this against a change made on screen. |
+| 3 | Audit data already recorded | `AP_INVOICES_ALL_`: 17 rows, 05-Oct-2026 08:01 to 13-Oct-2026 10:03 UTC.<br>`GL_JE_BATCHES_` 16, `GL_JE_HEADERS_` 11, `GL_JE_LINES_` 21 rows, all on 12-Oct-2026 between 08:41 and 12:19 UTC.<br>`AP_INVOICE_LINES_ALL_`, `AP_INVOICE_DISTRIBUTIONS_ALL_`, `AP_PAYMENT_SCHEDULES_ALL_`, `FA_ADDITIONS_B_`: 0 rows. | Auditing is **already on** for the AP invoice header (history from 5 Oct 2026) and for GL journals (activity on 12 Oct only, which looks like a test). Lines, distributions, installments and Assets show nothing: either not enabled, or no audited change yet (screenshots will tell). The report cannot show anything before these dates. |
+
+Added checks **20** (AP invoice audit rows next to the current invoice) and **21** (GL journal header audit rows next to the current journal). They use the existing audit rows to answer V-01's main question without a new test: does each audit row hold the values after the change or before it, which columns are being audited (non-audited columns are empty in the audit rows), and are deletions recorded.
+
+| 20, 21 | How audit rows are stored (AP invoice header, GL journal header) | For each record:<ul><li>The **first** audited change writes a `HISTORY` row: the state *before* that change, carrying its earlier WHO values.</li><li>**Every change** then writes an `UPDATE` row: the state *after* the change, with `LAST_UPDATED_BY` / `LAST_UPDATE_DATE` = who and when.</li><li>`OBJECT_VERSION_NUMBER` increases with each row.</li></ul>Examples: invoice 300000004847090 shows 800 → 1000 → 1200 → 1380 and then number inv-234 → inv-23478, five separate changes. Invoice 300000004842569 shows the number changing inv-964 → inv-964122.<br>Columns that are not audited are empty: GL `STATUS` (never null in the base table) is empty in every audit row, and AP `DESCRIPTION` / `BATCH_ID` are empty too.<br>No `DELETE` rows yet. `AUDIT_IMPERSONATOR_` empty. All rows by `admin_impl`. | **V-01's main question is answered.**<ul><li>Old value = the previous row of the same record (`HISTORY` or `UPDATE`).</li><li>New value, user and time = the `UPDATE` row.</li><li>`HISTORY` rows are never reported as changes.</li><li>The first change's old value **is** available.</li></ul>Only columns that are audited may be compared.<br>The current invoice's *Last Updated* is often later than its last audit row (for example invoice 300000004778645: version 14 now, last audit row version 5). This shows that changes to non-audited columns and process updates are not in the audit, and that "last updated by" cannot be used as an audit trail.<br>AP header attributes audited so far appear to be supplier, site, number, amount, date and terms. Description and invoice group look not ticked; the screenshots will confirm. |
+
+| 5, 6 + setup page | Audit setup (`FND_AUDIT_ATTRIBUTES` exists and is readable) | **Payables** objects Invoice, Invoice Lines, Invoice Distributions and Invoice Installments are now ticked in TEST.<br>Every Changes-file field offered is enabled, except as listed below.<br>**Not offered** (cannot be audited): line Income Tax Region, Asset Category, Correction Type, tax Rate Name; installment Discount Date, Discount amount and hold flag (only Hold Reason is offered).<br>**To confirm:** line Accrual Account, Start Date, Asset Book.<br>**Assets:** all 14 descriptive fields enabled.<br>**General Ledger:** all batch, journal and line fields enabled, except batch Accounting Period (`DEFAULT_PERIOD_NAME`), which is offered but not ticked. | `02_Field_Mapping.xlsx` updated. The same setup must be repeated in Production. |
+
+Still pending:
+- Checks 2, 4–7 and 10–19.
+- GL batch Accounting Period: not offered on the setup page; covered partly through the journal accounting date. Line Accrual Account, Start Date and Asset Book: enabled 18 Oct 2026. Setup in TEST is complete; repeat it in Production.
+- A test with a second user (V-01 user part) and a deleted line (DELETE rows).
+- Which environment checks 1–9 ran in (DEV, TEST or Production).
+- The Manage Audit Policies screenshots.
+- Validation tests V-01 to V-04.
 
 ---
 
@@ -426,3 +454,19 @@ The layout is built: **`Audit_Trail_Report_Layout.xls`**. Its requirements on th
 - Requisition document history: https://docs.oracle.com/en/cloud/saas/procurement/26d/oaprc/document-history.html
 - Native history tables: CE_RECON_HISTORY https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/cereconhistory-11356.html · AP_HOLDS_ALL https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/apholdsall-11070.html · AR_RECEIVABLE_APPLICATIONS_ALL https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/arreceivableapplicationsall-12493.html · FA_TRANSACTION_HEADERS https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/fatransactionheaders-11849.html · GL_JE_ACTION_LOG https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/gljeactionlog-10208.html
 - Tables and Views guides: Financials https://docs.oracle.com/en/cloud/saas/financials/26d/oedmf/toc.htm · Procurement https://docs.oracle.com/en/cloud/saas/procurement/26d/oedmp/toc.htm · Common https://docs.oracle.com/en/cloud/saas/applications-common/26d/oedma/toc.htm
+
+---
+
+## 8. Change log
+
+### 19 October 2026: report restricted to General Ledger (testing feedback)
+
+| # | Change | Root cause / reason |
+|---|---|---|
+| 1 | Scope reduced to **General Ledger only**. The Payables, Purchase Orders, Fixed Assets, Receivables, Bank Statements, Requisitions and Payments sections were removed from the SQL itself, not only hidden in the layout. The Product parameter is no longer used. | Requested scope change. |
+| 2 | **Transaction ID = journal name** for every row. Batch-level changes show the name of the batch's journal. | Action-log and batch-level rows fell back to the batch name when no journal was linked. |
+| 3 | **Journal action log reduced to Copy.** The "Journal Action > Created / Updated" rows are removed. | These are events from GL_JE_ACTION_LOG, not field changes. |
+| 4 | Only **user-entered fields** are compared: entered debit/credit, account, description, header and batch fields. Accounted amounts and running totals are never reported. | Derived values change with every edit and are not user changes. |
+| 5 | **Transaction Status** read from Oracle's MJE_BATCH_STATUS lookup (journal batch status), with Posted / Unposted as fallback. | Raw status codes such as U were displayed. |
+| 6 | **Coverage sheet removed** from the Excel layout. | Requested. |
+| 7 | Fixed Assets "Comments" false positive fixed in the generator (kept for future use, not in the GL report). | A Comments row was produced for every asset transaction, even without a comment. |
